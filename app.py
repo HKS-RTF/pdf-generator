@@ -1,8 +1,9 @@
 import os
 import random
-from datetime import datetime
 import io
+from datetime import datetime
 import streamlit as st
+from supabase import create_client, Client
 
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
@@ -11,7 +12,16 @@ from reportlab.lib import colors
 from reportlab.graphics.shapes import Drawing
 from reportlab.graphics.barcode.qr import QrCodeWidget
 
-from docx import Document
+# --- Initialize Supabase Client ---
+@st.cache_resource
+def init_supabase() -> Client:
+    url = st.secrets.get("SUPABASE_URL") or os.getenv("SUPABASE_URL")
+    key = st.secrets.get("SUPABASE_KEY") or os.getenv("SUPABASE_KEY")
+    if not url or not key:
+        return None
+    return create_client(url, key)
+
+supabase = init_supabase()
 
 # --- Helper Functions ---
 def num_to_words_indian_clean(num):
@@ -44,45 +54,59 @@ def num_to_words_indian_clean(num):
     if num > 0: result += convert_below_thousand(num)
     return f"{result.strip()} RUPEES ONLY"
 
-def get_all_log_entries():
-    """Extracts all log entries from ESTIMATION_LOG.docx"""
-    docx_filename = os.path.join("ESTIMATIONS", "ESTIMATION_LOG.docx")
-    entries = []
-    if os.path.exists(docx_filename):
-        try:
-            doc = Document(docx_filename)
-            if doc.tables:
-                table = doc.tables[0]
-                for row in table.rows[1:]: # Skip table header
-                    cells = [cell.text.strip() for cell in row.cells]
-                    if len(cells) >= 4:
-                        entries.append({
-                            "ref_no": cells[0],
-                            "date": cells[1],
-                            "customer": cells[2],
-                            "amount": cells[3]
-                        })
-        except Exception as e:
-            print(f"Error reading log file: {e}")
-    return entries
-
-def find_pdf_by_ref_no(ref_no):
-    """Finds matching PDF file path by REF NO"""
-    output_dir = "ESTIMATIONS"
-    ref_str = str(ref_no).strip()
-    if not ref_str or not os.path.exists(output_dir):
+# --- Cloud Database & Storage Functions ---
+def upload_to_cloud(ref_no, pdf_bytes, filename, owner, est_date, final_total):
+    """Uploads PDF to Supabase Bucket & logs metadata to Supabase DB"""
+    if not supabase:
         return None
     
-    for file in os.listdir(output_dir):
-        if file.endswith(".pdf") and ref_str in file:
-            return os.path.join(output_dir, file)
-    return None
+    # 1. Upload PDF file to Supabase Bucket
+    storage_path = f"pdf_estimations/{filename}"
+    supabase.storage.from_("estimations").upload(
+        path=storage_path,
+        file=pdf_bytes,
+        file_options={"content-type": "application/pdf", "upsert": "true"}
+    )
+    
+    # 2. Get Public URL
+    pdf_url = supabase.storage.from_("estimations").get_public_url(storage_path)
+    
+    # 3. Log to Supabase Database
+    data = {
+        "ref_no": str(ref_no),
+        "customer_name": str(owner.upper()),
+        "est_date": str(est_date),
+        "amount": float(final_total),
+        "pdf_url": pdf_url
+    }
+    supabase.table("estimation_logs").upsert(data).execute()
+    return pdf_url
 
-# --- Main PDF Generator ---
-def generate_estimation_pdf(owner, address, est_date, target_total):
-    output_dir = "ESTIMATIONS"
-    os.makedirs(output_dir, exist_ok=True)
+def fetch_estimation_by_ref(ref_no):
+    """Retrieves PDF and metadata from Supabase Cloud by REF NO"""
+    if not supabase:
+        return None, None
+    
+    response = supabase.table("estimation_logs").select("*").eq("ref_no", str(ref_no).strip()).execute()
+    if response.data:
+        record = response.data[0]
+        storage_path = f"pdf_estimations/Estimation_{record['ref_no']}_{record['customer_name'].replace(' ', '_').replace('&', 'AND')}.pdf"
+        try:
+            pdf_data = supabase.storage.from_("estimations").download(storage_path)
+            return record, pdf_data
+        except Exception:
+            return record, None
+    return None, None
 
+def fetch_all_logs():
+    """Fetches full log history from Supabase Cloud"""
+    if not supabase:
+        return []
+    response = supabase.table("estimation_logs").select("*").order("created_at", desc=True).execute()
+    return response.data
+
+# --- PDF Generation in Memory ---
+def generate_estimation_pdf_bytes(owner, address, est_date, target_total):
     is_single_page = target_total < 1500000
 
     FIXED_ITEMS_MASTER = [
@@ -135,9 +159,10 @@ def generate_estimation_pdf(owner, address, est_date, target_total):
     now = datetime.now()
     ref_no = now.strftime("%H%M%d%m%Y")
     clean_owner_name = owner.replace(' ', '_').replace('&', 'AND')
-    pdf_filename = os.path.join(output_dir, f"Estimation_{ref_no}_{clean_owner_name}.pdf")
+    filename = f"Estimation_{ref_no}_{clean_owner_name}.pdf"
 
-    doc = SimpleDocTemplate(pdf_filename, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=15, bottomMargin=15)
+    pdf_buffer = io.BytesIO()
+    doc = SimpleDocTemplate(pdf_buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=15, bottomMargin=15)
     styles = getSampleStyleSheet()
 
     RED_COLOR, BLUE_COLOR, LIGHT_PINK, BORDER_BLUE = colors.HexColor("#DC2626"), colors.HexColor("#1E40AF"), colors.HexColor("#EC4899"), colors.HexColor("#2563EB")
@@ -213,7 +238,6 @@ def generate_estimation_pdf(owner, address, est_date, target_total):
         t1 = Table(p_table_data, colWidths=[50, 280, 100, 120])
         t1.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('TOPPADDING', (0,0), (-1,-1), 6.5), ('BOTTOMPADDING', (0,0), (-1,-1), 6.5)]))
         elements.append(t1)
-
     else:
         p1_table_data = [[Paragraph("SL.NO", hdr_12_bold_center), Paragraph("Description", hdr_12_bold_center), Paragraph("Qty", hdr_12_bold_center), Paragraph("Amount Rs.", hdr_12_bold_center)]]
         for idx in range(9):
@@ -258,34 +282,22 @@ def generate_estimation_pdf(owner, address, est_date, target_total):
         elements.append(Spacer(1, 2))
 
     doc.build(elements)
+    pdf_bytes = pdf_buffer.getvalue()
+    pdf_buffer.close()
 
-    # Logging to Word Document
-    docx_filename = os.path.join(output_dir, "ESTIMATION_LOG.docx")
-    if os.path.exists(docx_filename):
-        doc_word = Document(docx_filename)
-    else:
-        doc_word = Document()
-        doc_word.add_heading('ESTIMATION LOGS', level=1)
-        table = doc_word.add_table(rows=1, cols=4)
-        table.style = 'Table Grid'
-        hdr_cells = table.rows[0].cells
-        hdr_cells[0].text, hdr_cells[1].text, hdr_cells[2].text, hdr_cells[3].text = 'REF NO', 'DATE', 'CUSTOMER NAME', 'AMOUNT (Rs.)'
-
-    table = doc_word.tables[0]
-    row_cells = table.add_row().cells
-    row_cells[0].text, row_cells[1].text, row_cells[2].text, row_cells[3].text = str(ref_no), str(est_date), str(owner.upper()), f"{final_total:,.2f}"
-    doc_word.save(docx_filename)
-
-    return pdf_filename, docx_filename, ref_no
+    return pdf_bytes, filename, ref_no, final_total
 
 
 # --- Streamlit Web UI ---
-st.set_page_config(page_title="SND Estimation Generator", page_icon="🏗️", layout="centered")
+st.set_page_config(page_title="SND Estimation Cloud Generator", page_icon="☁️", layout="centered")
 
 st.title("🏗️ SND Interior & Designs")
-st.markdown("##### Estimation Generator & Record Lookup System")
+st.markdown("##### Cloud-Connected Estimation System")
 
-tab1, tab2 = st.tabs(["📝 Generate New Estimation", "🔍 Lookup & Download by Ref No"])
+if not supabase:
+    st.warning("⚠️ **Cloud Storage Disconnected:** Please configure `SUPABASE_URL` and `SUPABASE_KEY` in Streamlit Secrets (`.streamlit/secrets.toml`) to enable permanent cloud storage.")
+
+tab1, tab2 = st.tabs(["📝 Generate New Estimation", "🔍 Cloud Lookup by Ref No"])
 
 # --- TAB 1: GENERATE NEW ESTIMATION ---
 with tab1:
@@ -295,78 +307,71 @@ with tab1:
         date_input = st.text_input("Date:", value=datetime.now().strftime("%d-%m-%Y"))
         amount_input = st.number_input("Target Amount (Rs.):", min_value=50000, max_value=10000000, value=1499000, step=10000)
         
-        submitted = st.form_submit_button("Generate PDF & Log", type="primary", use_container_width=True)
+        submitted = st.form_submit_button("Generate & Save to Cloud", type="primary", use_container_width=True)
 
     if submitted:
-        with st.spinner('Calculating items and generating PDF...'):
+        with st.spinner('Generating estimation PDF and syncing to cloud...'):
             try:
-                pdf_path, docx_path, generated_ref = generate_estimation_pdf(
+                pdf_bytes, filename, generated_ref, final_total = generate_estimation_pdf_bytes(
                     owner_input, address_input, date_input, float(amount_input)
                 )
-                st.success(f"✅ Estimation Generated Successfully! (REF NO: `{generated_ref}`)")
                 
-                col1, col2 = st.columns(2)
-                
-                # PDF Download Button
-                with open(pdf_path, "rb") as file:
-                    col1.download_button(
-                        label="📄 Download Estimation PDF",
-                        data=file,
-                        file_name=os.path.basename(pdf_path),
-                        mime="application/pdf",
-                        use_container_width=True
-                    )
-                    
-                # Log Word Doc Download Button
-                with open(docx_path, "rb") as file2:
-                    col2.download_button(
-                        label="📋 Download Updated Log (Word)",
-                        data=file2,
-                        file_name="ESTIMATION_LOG.docx",
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        use_container_width=True
-                    )
-                    
-                st.warning("⚠️ **Note regarding the Log:** Because this is a cloud app, data resets if idle for long periods. Always download your updated log file or keep note of the Reference Number.")
+                # Sync to Supabase Cloud
+                if supabase:
+                    cloud_url = upload_to_cloud(generated_ref, pdf_bytes, filename, owner_input, date_input, final_total)
+                    st.success(f"✅ Estimation Generated & Uploaded to Cloud! (**REF NO:** `{generated_ref}`)")
+                else:
+                    st.success(f"✅ Estimation Generated Locally! (**REF NO:** `{generated_ref}`)")
+
+                st.download_button(
+                    label="📄 Download Estimation PDF",
+                    data=pdf_bytes,
+                    file_name=filename,
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True
+                )
 
             except Exception as e:
                 st.error(f"An error occurred: {e}")
 
 # --- TAB 2: LOOKUP & DOWNLOAD BY REF NO ---
 with tab2:
-    st.subheader("Lookup Estimation File")
-    st.write("Enter a Reference Number (`REF NO`) to search and download the estimation PDF.")
+    st.subheader("Cloud Storage Lookup")
+    st.write("Enter any Reference Number (`REF NO`) to pull the exact PDF directly from cloud storage.")
 
     search_ref = st.text_input("Enter Reference Number (REF NO):", placeholder="e.g. 152329072026")
     
     if search_ref:
-        pdf_filepath = find_pdf_by_ref_no(search_ref)
-        log_entries = get_all_log_entries()
-        matched_entry = next((item for item in log_entries if item["ref_no"] == search_ref.strip()), None)
-
-        if pdf_filepath and os.path.exists(pdf_filepath):
-            st.success(f"🎯 Estimation PDF found for REF NO: `{search_ref.strip()}`")
-            
-            if matched_entry:
-                st.info(f"**Customer:** {matched_entry['customer']} | **Date:** {matched_entry['date']} | **Amount:** Rs. {matched_entry['amount']}")
-            
-            with open(pdf_filepath, "rb") as pdf_file:
-                st.download_button(
-                    label=f"📥 Download Estimation PDF ({os.path.basename(pdf_filepath)})",
-                    data=pdf_file,
-                    file_name=os.path.basename(pdf_filepath),
-                    mime="application/pdf",
-                    type="primary",
-                    use_container_width=True
-                )
+        if supabase:
+            with st.spinner('Searching cloud database...'):
+                record, pdf_data = fetch_estimation_by_ref(search_ref)
+                
+                if record:
+                    st.success(f"🎯 Found Estimation in Cloud!")
+                    st.info(f"**REF NO:** {record['ref_no']} | **Customer:** {record['customer_name']} | **Date:** {record['est_date']} | **Amount:** Rs. {record['amount']:,.2f}")
+                    
+                    if pdf_data:
+                        st.download_button(
+                            label=f"📥 Download PDF ({record['ref_no']})",
+                            data=pdf_data,
+                            file_name=f"Estimation_{record['ref_no']}_{record['customer_name']}.pdf",
+                            mime="application/pdf",
+                            type="primary",
+                            use_container_width=True
+                        )
+                    elif record.get('pdf_url'):
+                        st.markdown(f"[🔗 Direct Download Link]({record['pdf_url']})")
+                else:
+                    st.error(f"❌ No estimation found in cloud storage matching REF NO: `{search_ref.strip()}`")
         else:
-            st.error(f"❌ No estimation PDF found matching Reference Number: `{search_ref.strip()}`")
+            st.error("Supabase cloud connection is not configured.")
 
     st.markdown("---")
-    st.subheader("📋 Logged Estimations History")
-    all_entries = get_all_log_entries()
-    
-    if all_entries:
-        st.dataframe(all_entries, use_container_width=True)
-    else:
-        st.caption("No estimation logs recorded in the current session yet.")
+    st.subheader("📋 Live Cloud History")
+    if supabase:
+        all_logs = fetch_all_logs()
+        if all_logs:
+            st.dataframe(all_logs, use_container_width=True)
+        else:
+            st.caption("No estimations stored in cloud database yet.")
