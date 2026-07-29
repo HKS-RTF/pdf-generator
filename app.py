@@ -1,46 +1,19 @@
 import os
 import random
-import urllib.request
 from datetime import datetime
-import streamlit as st
 import io
+import streamlit as st
 
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.graphics.shapes import Drawing
 from reportlab.graphics.barcode.qr import QrCodeWidget
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.lib.units import cm
 
 from docx import Document
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
-import docx.opc.constants
 
 # --- Helper Functions ---
-def add_hyperlink(paragraph, url, text, color="0000FF", underline=True):
-    part = paragraph.part
-    r_id = part.relate_to(url, docx.opc.constants.RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
-    hyperlink = OxmlElement('w:hyperlink')
-    hyperlink.set(qn('r:id'), r_id)
-    new_run = OxmlElement('w:r')
-    rPr = OxmlElement('w:rPr')
-    if color:
-        c = OxmlElement('w:color')
-        c.set(qn('w:val'), color)
-        rPr.append(c)
-    if underline:
-        u = OxmlElement('w:u')
-        u.set(qn('w:val'), 'single')
-        rPr.append(u)
-    new_run.append(rPr)
-    new_run.text = text
-    hyperlink.append(new_run)
-    paragraph._p.append(hyperlink)
-
 def num_to_words_indian_clean(num):
     num = int(round(num))
     if num == 0: return "ZERO RUPEES ONLY"
@@ -71,35 +44,46 @@ def num_to_words_indian_clean(num):
     if num > 0: result += convert_below_thousand(num)
     return f"{result.strip()} RUPEES ONLY"
 
-def download_image_from_drive(drive_link):
-    try:
-        if "drive.google.com" in drive_link:
-            if "id=" in drive_link:
-                file_id = drive_link.split("id=")[1].split("&")[0]
-            else:
-                file_id = drive_link.split("/d/")[1].split("/")[0]
-            download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-        else:
-            download_url = drive_link
+def get_all_log_entries():
+    """Extracts all log entries from ESTIMATION_LOG.docx"""
+    docx_filename = os.path.join("ESTIMATIONS", "ESTIMATION_LOG.docx")
+    entries = []
+    if os.path.exists(docx_filename):
+        try:
+            doc = Document(docx_filename)
+            if doc.tables:
+                table = doc.tables[0]
+                for row in table.rows[1:]: # Skip table header
+                    cells = [cell.text.strip() for cell in row.cells]
+                    if len(cells) >= 4:
+                        entries.append({
+                            "ref_no": cells[0],
+                            "date": cells[1],
+                            "customer": cells[2],
+                            "amount": cells[3]
+                        })
+        except Exception as e:
+            print(f"Error reading log file: {e}")
+    return entries
 
-        local_path = "seal_sign.png"
-        urllib.request.urlretrieve(download_url, local_path)
-        if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-            return local_path
-    except Exception as e:
-        print(f"Error downloading seal/sign image: {e}")
+def find_pdf_by_ref_no(ref_no):
+    """Finds matching PDF file path by REF NO"""
+    output_dir = "ESTIMATIONS"
+    ref_str = str(ref_no).strip()
+    if not ref_str or not os.path.exists(output_dir):
+        return None
+    
+    for file in os.listdir(output_dir):
+        if file.endswith(".pdf") and ref_str in file:
+            return os.path.join(output_dir, file)
     return None
 
 # --- Main PDF Generator ---
-def generate_estimation_pdf(owner, address, est_date, target_total, include_seal, seal_link):
+def generate_estimation_pdf(owner, address, est_date, target_total):
     output_dir = "ESTIMATIONS"
     os.makedirs(output_dir, exist_ok=True)
 
     is_single_page = target_total < 1500000
-
-    seal_image_path = None
-    if not is_single_page and include_seal and seal_link:
-        seal_image_path = download_image_from_drive(seal_link)
 
     FIXED_ITEMS_MASTER = [
         ("Replacing sanitary fittings inside the toilets", "SETS", "SETS_UNITS", 0.08),
@@ -151,7 +135,7 @@ def generate_estimation_pdf(owner, address, est_date, target_total, include_seal
     now = datetime.now()
     ref_no = now.strftime("%H%M%d%m%Y")
     clean_owner_name = owner.replace(' ', '_').replace('&', 'AND')
-    pdf_filename = os.path.join(output_dir, f"Estimation_{clean_owner_name}.pdf")
+    pdf_filename = os.path.join(output_dir, f"Estimation_{ref_no}_{clean_owner_name}.pdf")
 
     doc = SimpleDocTemplate(pdf_filename, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=15, bottomMargin=15)
     styles = getSampleStyleSheet()
@@ -240,13 +224,6 @@ def generate_estimation_pdf(owner, address, est_date, target_total, include_seal
         t1.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('TOPPADDING', (0,0), (-1,-1), 16), ('BOTTOMPADDING', (0,0), (-1,-1), 16)]))
         elements.append(t1)
 
-        if seal_image_path and os.path.exists(seal_image_path):
-            elements.append(Spacer(1, 6))
-            seal_img_p1 = Image(seal_image_path, width=3.75*cm, height=2.60*cm)
-            seal_table_p1 = Table([[seal_img_p1]], colWidths=[550])
-            seal_table_p1.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
-            elements.append(seal_table_p1)
-
         elements.append(PageBreak())
         elements.extend(create_header_with_qr())
 
@@ -280,16 +257,9 @@ def generate_estimation_pdf(owner, address, est_date, target_total, include_seal
         elements.append(Paragraph(point, terms_point_size_8))
         elements.append(Spacer(1, 2))
 
-    if not is_single_page and seal_image_path and os.path.exists(seal_image_path):
-        elements.append(Spacer(1, 4))
-        seal_img_final = Image(seal_image_path, width=3.75*cm, height=2.60*cm)
-        seal_table_final = Table([[seal_img_final]], colWidths=[550])
-        seal_table_final.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
-        elements.append(seal_table_final)
-
     doc.build(elements)
 
-    # Logging
+    # Logging to Word Document
     docx_filename = os.path.join(output_dir, "ESTIMATION_LOG.docx")
     if os.path.exists(docx_filename):
         doc_word = Document(docx_filename)
@@ -306,55 +276,97 @@ def generate_estimation_pdf(owner, address, est_date, target_total, include_seal
     row_cells[0].text, row_cells[1].text, row_cells[2].text, row_cells[3].text = str(ref_no), str(est_date), str(owner.upper()), f"{final_total:,.2f}"
     doc_word.save(docx_filename)
 
-    return pdf_filename, docx_filename
+    return pdf_filename, docx_filename, ref_no
+
 
 # --- Streamlit Web UI ---
-st.set_page_config(page_title="SND Estimation Generator", page_icon="🏗️")
+st.set_page_config(page_title="SND Estimation Generator", page_icon="🏗️", layout="centered")
 
 st.title("🏗️ SND Interior & Designs")
-st.subheader("Estimation PDF Generator")
+st.markdown("##### Estimation Generator & Record Lookup System")
 
-with st.form("estimation_form"):
-    owner_input = st.text_input("Owner Name:", value="KUSHAL ANAND & HKS")
-    address_input = st.text_area("Site Address:", value="BIRLA TRIMAYA PHASE 4 FLAT-1205, T-6, F-12, DEVANAHALLI CHIKKAJALA, BENGALURU")
-    date_input = st.text_input("Date:", value=datetime.now().strftime("%d-%m-%Y"))
-    amount_input = st.number_input("Target Amount (Rs.):", min_value=50000, max_value=10000000, value=1499000, step=10000)
+tab1, tab2 = st.tabs(["📝 Generate New Estimation", "🔍 Lookup & Download by Ref No"])
+
+# --- TAB 1: GENERATE NEW ESTIMATION ---
+with tab1:
+    with st.form("estimation_form"):
+        owner_input = st.text_input("Owner Name:", value="KUSHAL ANAND & HKS")
+        address_input = st.text_area("Site Address:", value="BIRLA TRIMAYA PHASE 4 FLAT-1205, T-6, F-12, DEVANAHALLI CHIKKAJALA, BENGALURU")
+        date_input = st.text_input("Date:", value=datetime.now().strftime("%d-%m-%Y"))
+        amount_input = st.number_input("Target Amount (Rs.):", min_value=50000, max_value=10000000, value=1499000, step=10000)
+        
+        submitted = st.form_submit_button("Generate PDF & Log", type="primary", use_container_width=True)
+
+    if submitted:
+        with st.spinner('Calculating items and generating PDF...'):
+            try:
+                pdf_path, docx_path, generated_ref = generate_estimation_pdf(
+                    owner_input, address_input, date_input, float(amount_input)
+                )
+                st.success(f"✅ Estimation Generated Successfully! (REF NO: `{generated_ref}`)")
+                
+                col1, col2 = st.columns(2)
+                
+                # PDF Download Button
+                with open(pdf_path, "rb") as file:
+                    col1.download_button(
+                        label="📄 Download Estimation PDF",
+                        data=file,
+                        file_name=os.path.basename(pdf_path),
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
+                    
+                # Log Word Doc Download Button
+                with open(docx_path, "rb") as file2:
+                    col2.download_button(
+                        label="📋 Download Updated Log (Word)",
+                        data=file2,
+                        file_name="ESTIMATION_LOG.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        use_container_width=True
+                    )
+                    
+                st.warning("⚠️ **Note regarding the Log:** Because this is a cloud app, data resets if idle for long periods. Always download your updated log file or keep note of the Reference Number.")
+
+            except Exception as e:
+                st.error(f"An error occurred: {e}")
+
+# --- TAB 2: LOOKUP & DOWNLOAD BY REF NO ---
+with tab2:
+    st.subheader("Lookup Estimation File")
+    st.write("Enter a Reference Number (`REF NO`) to search and download the estimation PDF.")
+
+    search_ref = st.text_input("Enter Reference Number (REF NO):", placeholder="e.g. 152329072026")
     
+    if search_ref:
+        pdf_filepath = find_pdf_by_ref_no(search_ref)
+        log_entries = get_all_log_entries()
+        matched_entry = next((item for item in log_entries if item["ref_no"] == search_ref.strip()), None)
+
+        if pdf_filepath and os.path.exists(pdf_filepath):
+            st.success(f"🎯 Estimation PDF found for REF NO: `{search_ref.strip()}`")
+            
+            if matched_entry:
+                st.info(f"**Customer:** {matched_entry['customer']} | **Date:** {matched_entry['date']} | **Amount:** Rs. {matched_entry['amount']}")
+            
+            with open(pdf_filepath, "rb") as pdf_file:
+                st.download_button(
+                    label=f"📥 Download Estimation PDF ({os.path.basename(pdf_filepath)})",
+                    data=pdf_file,
+                    file_name=os.path.basename(pdf_filepath),
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True
+                )
+        else:
+            st.error(f"❌ No estimation PDF found matching Reference Number: `{search_ref.strip()}`")
+
     st.markdown("---")
-    seal_checkbox = st.checkbox("Include Seal & Sign (For multi-page only)", value=True)
-    seal_link_input = st.text_input("Google Drive Link for Seal:", value="https://drive.google.com/file/d/1QqGyOPDA9Z-kF0NCJUNvK7h03qUHfj4N/view?usp=drive_link")
+    st.subheader("📋 Logged Estimations History")
+    all_entries = get_all_log_entries()
     
-    submitted = st.form_submit_button("Generate PDF", type="primary")
-
-if submitted:
-    with st.spinner('Calculating items and generating PDF...'):
-        try:
-            pdf_path, docx_path = generate_estimation_pdf(
-                owner_input, address_input, date_input, float(amount_input), seal_checkbox, seal_link_input
-            )
-            st.success("✅ Estimation Generated Successfully!")
-            
-            col1, col2 = st.columns(2)
-            
-            # PDF Download Button
-            with open(pdf_path, "rb") as file:
-                btn = col1.download_button(
-                    label="📄 Download Estimation PDF",
-                    data=file,
-                    file_name=os.path.basename(pdf_path),
-                    mime="application/pdf"
-                )
-                
-            # Log Word Doc Download Button
-            with open(docx_path, "rb") as file2:
-                btn2 = col2.download_button(
-                    label="📋 Download Updated Log (Word)",
-                    data=file2,
-                    file_name="ESTIMATION_LOG.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                )
-                
-            st.warning("⚠️ **Note regarding the Log:** Because this is a free cloud app, your data resets when the page sleeps. Always download your updated log file after generating an estimate to keep your records safe.")
-
-        except Exception as e:
-            st.error(f"An error occurred: {e}")
+    if all_entries:
+        st.dataframe(all_entries, use_container_width=True)
+    else:
+        st.caption("No estimation logs recorded in the current session yet.")
