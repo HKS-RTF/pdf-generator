@@ -5,7 +5,7 @@ import streamlit as st
 import io
 
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.graphics.shapes import Drawing
@@ -13,9 +13,6 @@ from reportlab.graphics.barcode.qr import QrCodeWidget
 from reportlab.lib.units import cm
 
 from docx import Document
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
-import docx.opc.constants
 
 # --- Helper Functions ---
 def num_to_words_indian_clean(num):
@@ -47,21 +44,6 @@ def num_to_words_indian_clean(num):
     if thousand > 0: result += convert_below_thousand(thousand) + " THOUSAND "
     if num > 0: result += convert_below_thousand(num)
     return f"{result.strip()} RUPEES ONLY"
-
-# --- PDF Canvas Stamping Method (Forces Image on all pages, overlapping text) ---
-def add_seal_to_canvas(canvas, doc):
-    seal_path = "seal_sign.png"
-    if os.path.exists(seal_path):
-        # EXACT Dimensions required: 4.5cm width, 2.0cm height
-        width = 4.5 * cm
-        height = 2.0 * cm
-        
-        # Position: Right aligned, 10 points from the absolute bottom
-        x_pos = doc.pagesize[0] - doc.rightMargin - width
-        y_pos = 10 
-        
-        # Draw the image over everything else (mask='auto' preserves transparency)
-        canvas.drawImage(seal_path, x_pos, y_pos, width=width, height=height, mask='auto')
 
 # --- Main PDF Generator ---
 def generate_estimation_pdf(owner, address, est_date, target_total):
@@ -122,7 +104,6 @@ def generate_estimation_pdf(owner, address, est_date, target_total):
     clean_owner_name = owner.replace(' ', '_').replace('&', 'AND')
     pdf_filename = os.path.join(output_dir, f"Estimation_{clean_owner_name}.pdf")
 
-    # Margins optimized to use 99% space. Bottom margin extremely low so tables push down.
     doc = SimpleDocTemplate(pdf_filename, pagesize=letter, rightMargin=20, leftMargin=20, topMargin=10, bottomMargin=10)
     styles = getSampleStyleSheet()
 
@@ -188,6 +169,10 @@ def generate_estimation_pdf(owner, address, est_date, target_total):
     elements.append(project_box)
     elements.append(Spacer(1, 6))
 
+    # Check for seal image
+    seal_path = "seal_sign.png"
+    has_seal = os.path.exists(seal_path)
+
     if is_single_page:
         p_table_data = [[Paragraph("SL.NO", hdr_12_bold_center), Paragraph("Description", hdr_12_bold_center), Paragraph("Qty", hdr_12_bold_center), Paragraph("Amount Rs.", hdr_12_bold_center)]]
         for idx in range(10):
@@ -200,7 +185,50 @@ def generate_estimation_pdf(owner, address, est_date, target_total):
         t1.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('TOPPADDING', (0,0), (-1,-1), 6.5), ('BOTTOMPADDING', (0,0), (-1,-1), 6.5)]))
         elements.append(t1)
 
+        elements.append(Spacer(1, 6))
+        elements.append(Paragraph(num_to_words_indian_clean(final_total), words_13_bold_center))
+        elements.append(Spacer(1, 5))
+        elements.append(Paragraph("TERMS AND CONDITIONS:", terms_hdr_center))
+        elements.append(Spacer(1, 3))
+
+        p1 = Paragraph("1. This Is A Preliminary Estimate And Not A Final Invoice", terms_point_size_8)
+        p2_5 = [
+            Paragraph("2. Payment: 50% Advance, 30% After Material Delivery, 20% Upon Completion.", terms_point_size_8),
+            Spacer(1, 2),
+            Paragraph("3. Validity: This Estimation Is Valid For 45 Days From The Date Of Issue.", terms_point_size_8),
+            Spacer(1, 2),
+            Paragraph("4. Scope Of Work: Any Work Not Explicitly Mentioned In This Estimate Will Be Charged Extra.", terms_point_size_8),
+            Spacer(1, 2),
+            Paragraph("5. Materials: All Materials Used Will Be Of Standard Quality Unless Specified Otherwise.", terms_point_size_8),
+        ]
+        p6 = Paragraph("6. Project Duration: Estimated Project Completion Time Is 90 Working Days From Advance.", terms_point_size_8)
+
+        elements.append(p1)
+        elements.append(Spacer(1, 2))
+
+        if has_seal:
+            seal_img = Image(seal_path, width=4.5*cm, height=2.5*cm)
+            # Table layout: [Points 2-5] + [1 cm Gap] + [Seal Image]
+            col_widths = [570 - 1.0*cm - 4.5*cm, 1.0*cm, 4.5*cm]
+            terms_seal_table = Table([[p2_5, "", seal_img]], colWidths=col_widths)
+            terms_seal_table.setStyle(TableStyle([
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                ('ALIGN', (2,0), (2,0), 'RIGHT'),
+                ('LEFTPADDING', (0,0), (-1,-1), 0),
+                ('RIGHTPADDING', (0,0), (-1,-1), 0),
+                ('TOPPADDING', (0,0), (-1,-1), 0),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 0),
+            ]))
+            elements.append(terms_seal_table)
+        else:
+            for p in p2_5:
+                elements.append(p)
+
+        elements.append(Spacer(1, 2))
+        elements.append(p6)
+
     else:
+        # Page 1 of Two-Page Estimation
         p1_table_data = [[Paragraph("SL.NO", hdr_12_bold_center), Paragraph("Description", hdr_12_bold_center), Paragraph("Qty", hdr_12_bold_center), Paragraph("Amount Rs.", hdr_12_bold_center)]]
         for idx in range(9):
             item = processed_items[idx]
@@ -210,9 +238,25 @@ def generate_estimation_pdf(owner, address, est_date, target_total):
         t1.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('TOPPADDING', (0,0), (-1,-1), 16), ('BOTTOMPADDING', (0,0), (-1,-1), 16)]))
         elements.append(t1)
 
+        # Page 1 Seal: Bottom center, 0.5 cm gap below 9th item
+        if has_seal:
+            elements.append(Spacer(1, 0.5*cm))
+            seal_img_p1 = Image(seal_path, width=4.5*cm, height=2.5*cm)
+            seal_table_p1 = Table([[seal_img_p1]], colWidths=[570])
+            seal_table_p1.setStyle(TableStyle([
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                ('LEFTPADDING', (0,0), (-1,-1), 0),
+                ('RIGHTPADDING', (0,0), (-1,-1), 0),
+                ('TOPPADDING', (0,0), (-1,-1), 0),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 0),
+            ]))
+            elements.append(seal_table_p1)
+
         elements.append(PageBreak())
         elements.extend(create_header_with_qr())
 
+        # Page 2 of Two-Page Estimation
         p2_table_data = [[Paragraph("SL.NO", hdr_12_bold_center), Paragraph("Description", hdr_12_bold_center), Paragraph("Qty", hdr_12_bold_center), Paragraph("Amount Rs.", hdr_12_bold_center)]]
         for idx in range(9, 15):
             item = processed_items[idx]
@@ -225,26 +269,40 @@ def generate_estimation_pdf(owner, address, est_date, target_total):
         t2.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('TOPPADDING', (0,0), (-1,-1), 16), ('BOTTOMPADDING', (0,0), (-1,-1), 16)]))
         elements.append(t2)
 
-    elements.append(Spacer(1, 6))
-    elements.append(Paragraph(num_to_words_indian_clean(final_total), words_13_bold_center))
-    elements.append(Spacer(1, 5))
-    elements.append(Paragraph("TERMS AND CONDITIONS:", terms_hdr_center))
-    elements.append(Spacer(1, 3))
+        elements.append(Spacer(1, 6))
+        elements.append(Paragraph(num_to_words_indian_clean(final_total), words_13_bold_center))
+        elements.append(Spacer(1, 5))
+        elements.append(Paragraph("TERMS AND CONDITIONS:", terms_hdr_center))
+        elements.append(Spacer(1, 3))
 
-    terms_points = [
-        "1. This Is A Preliminary Estimate And Not A Final Invoice",
-        "2. Payment: 50% Advance, 30% After Material Delivery, 20% Upon Completion.",
-        "3. Validity: This Estimation Is Valid For 45 Days From The Date Of Issue.",
-        "4. Scope Of Work: Any Work Not Explicitly Mentioned In This Estimate Will Be Charged Extra.",
-        "5. Materials: All Materials Used Will Be Of Standard Quality Unless Specified Otherwise.",
-        "6. Project Duration: Estimated Project Completion Time Is 90 Working Days From Advance."
-    ]
-    for point in terms_points:
-        elements.append(Paragraph(point, terms_point_size_8))
-        elements.append(Spacer(1, 2))
+        terms_points = [
+            "1. This Is A Preliminary Estimate And Not A Final Invoice",
+            "2. Payment: 50% Advance, 30% After Material Delivery, 20% Upon Completion.",
+            "3. Validity: This Estimation Is Valid For 45 Days From The Date Of Issue.",
+            "4. Scope Of Work: Any Work Not Explicitly Mentioned In This Estimate Will Be Charged Extra.",
+            "5. Materials: All Materials Used Will Be Of Standard Quality Unless Specified Otherwise.",
+            "6. Project Duration: Estimated Project Completion Time Is 90 Working Days From Advance."
+        ]
+        for point in terms_points:
+            elements.append(Paragraph(point, terms_point_size_8))
+            elements.append(Spacer(1, 2))
 
-    # Build the document, stamping the seal on the canvas for ALL pages
-    doc.build(elements, onFirstPage=add_seal_to_canvas, onLaterPages=add_seal_to_canvas)
+        # Page 2 Seal: Bottom center, 1.0 cm gap below last point of terms
+        if has_seal:
+            elements.append(Spacer(1, 1.0*cm))
+            seal_img_p2 = Image(seal_path, width=4.5*cm, height=2.5*cm)
+            seal_table_p2 = Table([[seal_img_p2]], colWidths=[570])
+            seal_table_p2.setStyle(TableStyle([
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                ('LEFTPADDING', (0,0), (-1,-1), 0),
+                ('RIGHTPADDING', (0,0), (-1,-1), 0),
+                ('TOPPADDING', (0,0), (-1,-1), 0),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 0),
+            ]))
+            elements.append(seal_table_p2)
+
+    doc.build(elements)
 
     # Logging
     docx_filename = os.path.join(output_dir, "ESTIMATION_LOG.docx")
