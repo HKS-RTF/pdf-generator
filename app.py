@@ -5,7 +5,7 @@ import streamlit as st
 import io
 
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image, Flowable
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.graphics.shapes import Drawing
@@ -13,6 +13,37 @@ from reportlab.graphics.barcode.qr import QrCodeWidget
 from reportlab.lib.units import cm
 
 from docx import Document
+
+# --- Forceful Seal Overlay Class (Zero-Height Flowable) ---
+class OverlaySeal(Flowable):
+    def __init__(self, img_path, width=4.5*cm, height=2.5*cm, x_offset=0, y_offset=0, align="center"):
+        super().__init__()
+        self.img_path = img_path
+        self.width = width
+        self.height = height
+        self.x_offset = x_offset
+        self.y_offset = y_offset
+        self.align = align
+
+    def wrap(self, availWidth, availHeight):
+        # Returns (0, 0) so the document engine treats this as taking 0 height.
+        # This guarantees NO unwanted page breaks, even when overlapping text.
+        return 0, 0
+
+    def draw(self):
+        if os.path.exists(self.img_path):
+            self.canv.saveState()
+            if self.align == "center":
+                x = (570 - self.width) / 2 + self.x_offset
+            elif self.align == "right":
+                x = 570 - self.width + self.x_offset
+            else:
+                x = self.x_offset
+            
+            y = self.y_offset - self.height
+            self.canv.drawImage(self.img_path, x, y, width=self.width, height=self.height, mask='auto')
+            self.canv.restoreState()
+
 
 # --- Helper Functions ---
 def num_to_words_indian_clean(num):
@@ -112,7 +143,7 @@ def generate_pdf_file(pdf_filename, owner, address, est_date, ref_no, target_tot
     project_box = Table(box_content, colWidths=[570])
     project_box.setStyle(TableStyle([('BOX', (0,0), (-1,-1), 2, BORDER_BLUE), ('ROUNDEDCORNERS', [8, 8, 8, 8]), ('TOPPADDING', (0,0), (-1,-1), 3), ('BOTTOMPADDING', (0,0), (-1,-1), 3)]))
     elements.append(project_box)
-    elements.append(Spacer(1, 6))
+    elements.append(Spacer(1, 5))
 
     if is_single_page:
         p_table_data = [[Paragraph("SL.NO", hdr_12_bold_center), Paragraph("Description", hdr_12_bold_center), Paragraph("Qty", hdr_12_bold_center), Paragraph("Amount Rs.", hdr_12_bold_center)]]
@@ -123,79 +154,51 @@ def generate_pdf_file(pdf_filename, owner, address, est_date, ref_no, target_tot
         p_table_data.append(["", Paragraph("TOTAL", total_14_bold), "", Paragraph(f"{final_total:,}", total_14_bold)])
 
         t1 = Table(p_table_data, colWidths=[50, 300, 100, 120])
-        t1.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('TOPPADDING', (0,0), (-1,-1), 6.5), ('BOTTOMPADDING', (0,0), (-1,-1), 6.5)]))
+        t1.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('TOPPADDING', (0,0), (-1,-1), 5), ('BOTTOMPADDING', (0,0), (-1,-1), 5)]))
         elements.append(t1)
 
-        elements.append(Spacer(1, 6))
-        elements.append(Paragraph(num_to_words_indian_clean(final_total), words_13_bold_center))
         elements.append(Spacer(1, 5))
+        elements.append(Paragraph(num_to_words_indian_clean(final_total), words_13_bold_center))
+        elements.append(Spacer(1, 4))
         elements.append(Paragraph("TERMS AND CONDITIONS:", terms_hdr_center))
-        elements.append(Spacer(1, 3))
+        elements.append(Spacer(1, 2))
 
-        p1 = Paragraph("1. This Is A Preliminary Estimate And Not A Final Invoice", terms_point_size_8)
-        p2_5 = [
-            Paragraph("2. Payment: 50% Advance, 30% After Material Delivery, 20% Upon Completion.", terms_point_size_8),
-            Spacer(1, 2),
-            Paragraph("3. Validity: This Estimation Is Valid For 45 Days From The Date Of Issue.", terms_point_size_8),
-            Spacer(1, 2),
-            Paragraph("4. Scope Of Work: Any Work Not Explicitly Mentioned In This Estimate Will Be Charged Extra.", terms_point_size_8),
-            Spacer(1, 2),
-            Paragraph("5. Materials: All Materials Used Will Be Of Standard Quality Unless Specified Otherwise.", terms_point_size_8),
+        terms_points = [
+            "1. This Is A Preliminary Estimate And Not A Final Invoice",
+            "2. Payment: 50% Advance, 30% After Material Delivery, 20% Upon Completion.",
+            "3. Validity: This Estimation Is Valid For 45 Days From The Date Of Issue.",
+            "4. Scope Of Work: Any Work Not Explicitly Mentioned In This Estimate Will Be Charged Extra.",
+            "5. Materials: All Materials Used Will Be Of Standard Quality Unless Specified Otherwise.",
+            "6. Project Duration: Estimated Project Completion Time Is 90 Working Days From Advance."
         ]
-        p6 = Paragraph("6. Project Duration: Estimated Project Completion Time Is 90 Working Days From Advance.", terms_point_size_8)
+        for p_text in terms_points:
+            elements.append(Paragraph(p_text, terms_point_size_8))
+            elements.append(Spacer(1, 1.5))
 
-        elements.append(p1)
-        elements.append(Spacer(1, 2))
-
+        # Single Page Seal: Forcefully pasted at bottom right corner
         if has_seal:
-            seal_img = Image(seal_path, width=4.5*cm, height=2.5*cm)
-            col_widths = [570 - 1.0*cm - 4.5*cm, 1.0*cm, 4.5*cm]
-            terms_seal_table = Table([[p2_5, "", seal_img]], colWidths=col_widths)
-            terms_seal_table.setStyle(TableStyle([
-                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-                ('ALIGN', (2,0), (2,0), 'RIGHT'),
-                ('LEFTPADDING', (0,0), (-1,-1), 0),
-                ('RIGHTPADDING', (0,0), (-1,-1), 0),
-                ('TOPPADDING', (0,0), (-1,-1), 0),
-                ('BOTTOMPADDING', (0,0), (-1,-1), 0),
-            ]))
-            elements.append(terms_seal_table)
-        else:
-            for p in p2_5:
-                elements.append(p)
-
-        elements.append(Spacer(1, 2))
-        elements.append(p6)
+            elements.append(OverlaySeal(seal_path, width=4.5*cm, height=2.5*cm, align="right", y_offset=15))
 
     else:
-        # Page 1 of Two-Page Estimation
+        # --- Page 1 of Two-Page Estimation ---
         p1_table_data = [[Paragraph("SL.NO", hdr_12_bold_center), Paragraph("Description", hdr_12_bold_center), Paragraph("Qty", hdr_12_bold_center), Paragraph("Amount Rs.", hdr_12_bold_center)]]
         for idx in range(9):
             item = processed_items[idx]
             p1_table_data.append([Paragraph(f"{idx+1}.", cell_12_bold_center), Paragraph(item[0], cell_12_bold_center), Paragraph(item[1], cell_12_bold_center), Paragraph(f"{item_amounts[idx]:,}", cell_12_bold_center)])
         
         t1 = Table(p1_table_data, colWidths=[50, 300, 100, 120])
-        t1.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('TOPPADDING', (0,0), (-1,-1), 16), ('BOTTOMPADDING', (0,0), (-1,-1), 16)]))
+        # Standard padding kept at 10 (no reduction)
+        t1.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('TOPPADDING', (0,0), (-1,-1), 10), ('BOTTOMPADDING', (0,0), (-1,-1), 10)]))
         elements.append(t1)
 
+        # Page 1 Seal: Forcefully pasted at bottom center of Page 1
         if has_seal:
-            elements.append(Spacer(1, 0.5*cm))
-            seal_img_p1 = Image(seal_path, width=4.5*cm, height=2.5*cm)
-            seal_table_p1 = Table([[seal_img_p1]], colWidths=[570])
-            seal_table_p1.setStyle(TableStyle([
-                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-                ('LEFTPADDING', (0,0), (-1,-1), 0),
-                ('RIGHTPADDING', (0,0), (-1,-1), 0),
-                ('TOPPADDING', (0,0), (-1,-1), 0),
-                ('BOTTOMPADDING', (0,0), (-1,-1), 0),
-            ]))
-            elements.append(seal_table_p1)
+            elements.append(OverlaySeal(seal_path, width=4.5*cm, height=2.5*cm, align="center", y_offset=10))
 
         elements.append(PageBreak())
         elements.extend(create_header_with_qr())
 
-        # Page 2 of Two-Page Estimation
+        # --- Page 2 of Two-Page Estimation ---
         p2_table_data = [[Paragraph("SL.NO", hdr_12_bold_center), Paragraph("Description", hdr_12_bold_center), Paragraph("Qty", hdr_12_bold_center), Paragraph("Amount Rs.", hdr_12_bold_center)]]
         for idx in range(9, 15):
             item = processed_items[idx]
@@ -205,7 +208,8 @@ def generate_pdf_file(pdf_filename, owner, address, est_date, ref_no, target_tot
         p2_table_data.append(["", Paragraph("TOTAL", total_14_bold), "", Paragraph(f"{final_total:,}", total_14_bold)])
 
         t2 = Table(p2_table_data, colWidths=[50, 300, 100, 120])
-        t2.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('TOPPADDING', (0,0), (-1,-1), 16), ('BOTTOMPADDING', (0,0), (-1,-1), 16)]))
+        # Standard padding kept at 10
+        t2.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('TOPPADDING', (0,0), (-1,-1), 10), ('BOTTOMPADDING', (0,0), (-1,-1), 10)]))
         elements.append(t2)
 
         elements.append(Spacer(1, 6))
@@ -226,19 +230,9 @@ def generate_pdf_file(pdf_filename, owner, address, est_date, ref_no, target_tot
             elements.append(Paragraph(point, terms_point_size_8))
             elements.append(Spacer(1, 2))
 
+        # Page 2 Seal: Forcefully pasted at bottom center of Page 2
         if has_seal:
-            elements.append(Spacer(1, 1.0*cm))
-            seal_img_p2 = Image(seal_path, width=4.5*cm, height=2.5*cm)
-            seal_table_p2 = Table([[seal_img_p2]], colWidths=[570])
-            seal_table_p2.setStyle(TableStyle([
-                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-                ('LEFTPADDING', (0,0), (-1,-1), 0),
-                ('RIGHTPADDING', (0,0), (-1,-1), 0),
-                ('TOPPADDING', (0,0), (-1,-1), 0),
-                ('BOTTOMPADDING', (0,0), (-1,-1), 0),
-            ]))
-            elements.append(seal_table_p2)
+            elements.append(OverlaySeal(seal_path, width=4.5*cm, height=2.5*cm, align="center", y_offset=-5))
 
     doc.build(elements)
 
