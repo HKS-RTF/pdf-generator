@@ -45,64 +45,9 @@ def num_to_words_indian_clean(num):
     if num > 0: result += convert_below_thousand(num)
     return f"{result.strip()} RUPEES ONLY"
 
-# --- Main PDF Generator ---
-def generate_estimation_pdf(owner, address, est_date, target_total):
-    output_dir = "ESTIMATIONS"
-    os.makedirs(output_dir, exist_ok=True)
-
-    is_single_page = target_total < 1500000
-
-    FIXED_ITEMS_MASTER = [
-        ("Replacing sanitary fittings inside the toilets", "SETS", "SETS_UNITS", 0.08),
-        ("3 course of oil bond distemper (Inside repaint)", "SQ. FT", "SQFT", 0.07),
-        ("Providing & casting bathroom glazed tiles fixing etc.", "SQ. FT", "SQFT", 0.05),
-        ("Interior works (Wardrobes, Modular Kitchen)", "JOB", "JOB_LOT", 0.12),
-        ("Electrical fittings, cables, switches etc.", "JOB", "JOB_LOT", 0.07),
-        ("Painting (exterior walls)", "SQ. FT", "SQFT", 0.06),
-        ("New plumbing lines and fixtures", "JOB", "JOB_LOT", 0.05),
-        ("Landscaping/Balcony improvements", "JOB", "JOB_LOT", 0.06),
-        ("False ceiling work", "SQ. FT", "SQFT", 0.07),
-        ("Flooring (Tiles/Marble)", "SQ. FT", "SQFT", 0.07),
-        ("Providing & fixing teak wood show case", "UNIT", "SETS_UNITS", 0.06),
-        ("2 course of snow cem paint (Outside repaint)", "SQ. FT", "SQFT", 0.04),
-        ("Replacing sanitary fittings inside the kitchen", "SET", "SETS_UNITS", 0.05),
-        ("Demolition and debris removal", "LOT", "JOB_LOT", 0.06),
-        ("Wall plastering and finishing", "SQ. FT", "SQFT", 0.09)
-    ]
-
-    def calculate_quantity(category, total_amount):
-        min_budget, max_budget = 1500000.0, 4500000.0
-        ratio = max(0.0, min(1.0, (total_amount - min_budget) / (max_budget - min_budget)))
-        ratio = max(0.0, min(1.0, ratio + random.uniform(-0.05, 0.05)))
-        if category == "SQFT": return f"{round(650 + ratio * (2500 - 650))} SQ. FT"
-        elif category == "SETS_UNITS":
-            qty = round(1 + ratio * (5 - 1))
-            return f"{qty} SETS" if qty > 1 else "1 SET"
-        elif category == "JOB_LOT":
-            qty = round(1 + ratio * (2 - 1))
-            return f"{qty} JOB" if qty > 1 else "1 JOB"
-        return "1 JOB"
-
-    total_items_needed = 10 if is_single_page else 15
-    processed_items = [(desc, calculate_quantity(cat, target_total), w) for desc, _, cat, w in FIXED_ITEMS_MASTER]
-    random.shuffle(processed_items)
-    processed_items = processed_items[:total_items_needed]
-
-    subtotal_target = target_total / 1.18
-    weights = [item[2] * random.uniform(0.85, 1.15) for item in processed_items]
-    total_weight = sum(weights)
-    norm_weights = [w / total_weight for w in weights]
-    item_amounts = [round(subtotal_target * w) for w in norm_weights]
-    item_amounts[-1] += round(subtotal_target) - sum(item_amounts)
-
-    actual_subtotal = sum(item_amounts)
-    actual_gst = round(actual_subtotal * 0.18)
-    final_total = actual_subtotal + actual_gst
-
-    now = datetime.now()
-    ref_no = now.strftime("%H%M%d%m%Y")
-    clean_owner_name = owner.replace(' ', '_').replace('&', 'AND')
-    pdf_filename = os.path.join(output_dir, f"Estimation_{clean_owner_name}.pdf")
+def generate_pdf_file(pdf_filename, owner, address, est_date, ref_no, target_total, processed_items, item_amounts, actual_subtotal, actual_gst, final_total, is_single_page, include_seal):
+    seal_path = "seal_sign.png"
+    has_seal = include_seal and os.path.exists(seal_path)
 
     doc = SimpleDocTemplate(pdf_filename, pagesize=letter, rightMargin=20, leftMargin=20, topMargin=10, bottomMargin=10)
     styles = getSampleStyleSheet()
@@ -169,10 +114,6 @@ def generate_estimation_pdf(owner, address, est_date, target_total):
     elements.append(project_box)
     elements.append(Spacer(1, 6))
 
-    # Check for seal image
-    seal_path = "seal_sign.png"
-    has_seal = os.path.exists(seal_path)
-
     if is_single_page:
         p_table_data = [[Paragraph("SL.NO", hdr_12_bold_center), Paragraph("Description", hdr_12_bold_center), Paragraph("Qty", hdr_12_bold_center), Paragraph("Amount Rs.", hdr_12_bold_center)]]
         for idx in range(10):
@@ -208,7 +149,6 @@ def generate_estimation_pdf(owner, address, est_date, target_total):
 
         if has_seal:
             seal_img = Image(seal_path, width=4.5*cm, height=2.5*cm)
-            # Table layout: [Points 2-5] + [1 cm Gap] + [Seal Image]
             col_widths = [570 - 1.0*cm - 4.5*cm, 1.0*cm, 4.5*cm]
             terms_seal_table = Table([[p2_5, "", seal_img]], colWidths=col_widths)
             terms_seal_table.setStyle(TableStyle([
@@ -238,7 +178,6 @@ def generate_estimation_pdf(owner, address, est_date, target_total):
         t1.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('TOPPADDING', (0,0), (-1,-1), 16), ('BOTTOMPADDING', (0,0), (-1,-1), 16)]))
         elements.append(t1)
 
-        # Page 1 Seal: Bottom center, 0.5 cm gap below 9th item
         if has_seal:
             elements.append(Spacer(1, 0.5*cm))
             seal_img_p1 = Image(seal_path, width=4.5*cm, height=2.5*cm)
@@ -287,7 +226,6 @@ def generate_estimation_pdf(owner, address, est_date, target_total):
             elements.append(Paragraph(point, terms_point_size_8))
             elements.append(Spacer(1, 2))
 
-        # Page 2 Seal: Bottom center, 1.0 cm gap below last point of terms
         if has_seal:
             elements.append(Spacer(1, 1.0*cm))
             seal_img_p2 = Image(seal_path, width=4.5*cm, height=2.5*cm)
@@ -303,6 +241,73 @@ def generate_estimation_pdf(owner, address, est_date, target_total):
             elements.append(seal_table_p2)
 
     doc.build(elements)
+
+
+def generate_estimation_pdf_both(owner, address, est_date, target_total):
+    output_dir = "ESTIMATIONS"
+    os.makedirs(output_dir, exist_ok=True)
+
+    is_single_page = target_total < 1500000
+
+    FIXED_ITEMS_MASTER = [
+        ("Replacing sanitary fittings inside the toilets", "SETS", "SETS_UNITS", 0.08),
+        ("3 course of oil bond distemper (Inside repaint)", "SQ. FT", "SQFT", 0.07),
+        ("Providing & casting bathroom glazed tiles fixing etc.", "SQ. FT", "SQFT", 0.05),
+        ("Interior works (Wardrobes, Modular Kitchen)", "JOB", "JOB_LOT", 0.12),
+        ("Electrical fittings, cables, switches etc.", "JOB", "JOB_LOT", 0.07),
+        ("Painting (exterior walls)", "SQ. FT", "SQFT", 0.06),
+        ("New plumbing lines and fixtures", "JOB", "JOB_LOT", 0.05),
+        ("Landscaping/Balcony improvements", "JOB", "JOB_LOT", 0.06),
+        ("False ceiling work", "SQ. FT", "SQFT", 0.07),
+        ("Flooring (Tiles/Marble)", "SQ. FT", "SQFT", 0.07),
+        ("Providing & fixing teak wood show case", "UNIT", "SETS_UNITS", 0.06),
+        ("2 course of snow cem paint (Outside repaint)", "SQ. FT", "SQFT", 0.04),
+        ("Replacing sanitary fittings inside the kitchen", "SET", "SETS_UNITS", 0.05),
+        ("Demolition and debris removal", "LOT", "JOB_LOT", 0.06),
+        ("Wall plastering and finishing", "SQ. FT", "SQFT", 0.09)
+    ]
+
+    def calculate_quantity(category, total_amount):
+        min_budget, max_budget = 1500000.0, 4500000.0
+        ratio = max(0.0, min(1.0, (total_amount - min_budget) / (max_budget - min_budget)))
+        ratio = max(0.0, min(1.0, ratio + random.uniform(-0.05, 0.05)))
+        if category == "SQFT": return f"{round(650 + ratio * (2500 - 650))} SQ. FT"
+        elif category == "SETS_UNITS":
+            qty = round(1 + ratio * (5 - 1))
+            return f"{qty} SETS" if qty > 1 else "1 SET"
+        elif category == "JOB_LOT":
+            qty = round(1 + ratio * (2 - 1))
+            return f"{qty} JOB" if qty > 1 else "1 JOB"
+        return "1 JOB"
+
+    total_items_needed = 10 if is_single_page else 15
+    processed_items = [(desc, calculate_quantity(cat, target_total), w) for desc, _, cat, w in FIXED_ITEMS_MASTER]
+    random.shuffle(processed_items)
+    processed_items = processed_items[:total_items_needed]
+
+    subtotal_target = target_total / 1.18
+    weights = [item[2] * random.uniform(0.85, 1.15) for item in processed_items]
+    total_weight = sum(weights)
+    norm_weights = [w / total_weight for w in weights]
+    item_amounts = [round(subtotal_target * w) for w in norm_weights]
+    item_amounts[-1] += round(subtotal_target) - sum(item_amounts)
+
+    actual_subtotal = sum(item_amounts)
+    actual_gst = round(actual_subtotal * 0.18)
+    final_total = actual_subtotal + actual_gst
+
+    now = datetime.now()
+    ref_no = now.strftime("%H%M%d%m%Y")
+    clean_owner_name = owner.replace(' ', '_').replace('&', 'AND')
+
+    sealed_pdf_path = os.path.join(output_dir, f"Estimation_{ref_no}_{clean_owner_name}_Sealed.pdf")
+    unsealed_pdf_path = os.path.join(output_dir, f"Estimation_{ref_no}_{clean_owner_name}_Unsealed.pdf")
+
+    # Generate Sealed PDF
+    generate_pdf_file(sealed_pdf_path, owner, address, est_date, ref_no, target_total, processed_items, item_amounts, actual_subtotal, actual_gst, final_total, is_single_page, include_seal=True)
+    
+    # Generate Unsealed PDF
+    generate_pdf_file(unsealed_pdf_path, owner, address, est_date, ref_no, target_total, processed_items, item_amounts, actual_subtotal, actual_gst, final_total, is_single_page, include_seal=False)
 
     # Logging
     docx_filename = os.path.join(output_dir, "ESTIMATION_LOG.docx")
@@ -321,51 +326,118 @@ def generate_estimation_pdf(owner, address, est_date, target_total):
     row_cells[0].text, row_cells[1].text, row_cells[2].text, row_cells[3].text = str(ref_no), str(est_date), str(owner.upper()), f"{final_total:,.2f}"
     doc_word.save(docx_filename)
 
-    return pdf_filename, docx_filename
+    return sealed_pdf_path, unsealed_pdf_path, docx_filename, ref_no
+
 
 # --- Streamlit Web UI ---
-st.set_page_config(page_title="SND Estimation Generator", page_icon="🏗️")
+st.set_page_config(page_title="SND Estimation Generator", page_icon="🏗️", layout="wide")
 
 st.title("🏗️ SND Interior & Designs")
 st.subheader("Estimation PDF Generator")
 
-with st.form("estimation_form"):
-    owner_input = st.text_input("Owner Name:", value="KUSHAL ANAND & HKS")
-    address_input = st.text_area("Site Address:", value="BIRLA TRIMAYA PHASE 4 FLAT-1205, T-6, F-12, DEVANAHALLI CHIKKAJALA, BENGALURU")
-    date_input = st.text_input("Date:", value=datetime.now().strftime("%d-%m-%Y"))
-    amount_input = st.number_input("Target Amount (Rs.):", min_value=50000, max_value=10000000, value=1499000, step=10000)
+tabs = st.tabs(["✨ Generate New Estimation", "🔍 Re-download Estimation by Ref No"])
+
+# --- TAB 1: GENERATE NEW ESTIMATION ---
+with tabs[0]:
+    with st.form("estimation_form"):
+        st.markdown("### Enter Customer & Project Details")
+        owner_input = st.text_input("Owner Name:", value="KUSHAL ANAND & HKS")
+        address_input = st.text_area("Site Address:", value="BIRLA TRIMAYA PHASE 4 FLAT-1205, T-6, F-12, DEVANAHALLI CHIKKAJALA, BENGALURU")
+        date_input = st.text_input("Date:", value=datetime.now().strftime("%d-%m-%Y"))
+        amount_input = st.number_input("Target Amount (Rs.):", min_value=50000, max_value=10000000, value=1499000, step=10000)
+        
+        include_seal_choice = st.checkbox("Include Seal & Signature by default", value=True)
+        
+        submitted = st.form_submit_button("Generate PDF", type="primary")
+
+    if submitted:
+        with st.spinner('Calculating items and generating Sealed & Unsealed PDFs...'):
+            try:
+                sealed_path, unsealed_path, docx_path, generated_ref = generate_estimation_pdf_both(
+                    owner_input, address_input, date_input, float(amount_input)
+                )
+                st.success(f"✅ Estimation Generated Successfully! (Reference No: `{generated_ref}`)")
+                
+                col1, col2, col3 = st.columns(3)
+                
+                # Download Sealed PDF
+                with open(sealed_path, "rb") as file_sealed:
+                    col1.download_button(
+                        label="📄 Download Sealed PDF",
+                        data=file_sealed,
+                        file_name=os.path.basename(sealed_path),
+                        mime="application/pdf"
+                    )
+
+                # Download Unsealed PDF
+                with open(unsealed_path, "rb") as file_unsealed:
+                    col2.download_button(
+                        label="📄 Download Unsealed PDF",
+                        data=file_unsealed,
+                        file_name=os.path.basename(unsealed_path),
+                        mime="application/pdf"
+                    )
+
+                # Download Log
+                with open(docx_path, "rb") as file_log:
+                    col3.download_button(
+                        label="📋 Download Log (Word)",
+                        data=file_log,
+                        file_name="ESTIMATION_LOG.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
+                    
+                st.info("💡 **Tip:** Save the Reference Number (`" + generated_ref + "`) to re-download these PDFs anytime from the Re-download tab.")
+
+            except Exception as e:
+                st.error(f"An error occurred: {e}")
+
+# --- TAB 2: RE-DOWNLOAD ESTIMATION BY REFERENCE NUMBER ---
+with tabs[1]:
+    st.markdown("### Search & Re-download Existing Estimations")
+    search_ref = st.text_input("Enter Reference Number (e.g., 182329072026):").strip()
     
-    submitted = st.form_submit_button("Generate PDF", type="primary")
+    if st.button("🔍 Find Estimation", type="primary"):
+        if not search_ref:
+            st.warning("Please enter a valid Reference Number.")
+        else:
+            output_dir = "ESTIMATIONS"
+            found_sealed = None
+            found_unsealed = None
 
-if submitted:
-    with st.spinner('Calculating items and generating PDF...'):
-        try:
-            pdf_path, docx_path = generate_estimation_pdf(
-                owner_input, address_input, date_input, float(amount_input)
-            )
-            st.success("✅ Estimation Generated Successfully!")
-            
-            col1, col2 = st.columns(2)
-            
-            # PDF Download Button
-            with open(pdf_path, "rb") as file:
-                btn = col1.download_button(
-                    label="📄 Download Estimation PDF",
-                    data=file,
-                    file_name=os.path.basename(pdf_path),
-                    mime="application/pdf"
-                )
-                
-            # Log Word Doc Download Button
-            with open(docx_path, "rb") as file2:
-                btn2 = col2.download_button(
-                    label="📋 Download Updated Log (Word)",
-                    data=file2,
-                    file_name="ESTIMATION_LOG.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                )
-                
-            st.warning("⚠️ **Note regarding the Log:** Because this is a free cloud app, your data resets when the page sleeps. Always download your updated log file after generating an estimate to keep your records safe.")
+            if os.path.exists(output_dir):
+                for filename in os.listdir(output_dir):
+                    if search_ref in filename:
+                        full_path = os.path.join(output_dir, filename)
+                        if "Sealed" in filename:
+                            found_sealed = full_path
+                        elif "Unsealed" in filename:
+                            found_unsealed = full_path
 
-        except Exception as e:
-            st.error(f"An error occurred: {e}")
+            if found_sealed or found_unsealed:
+                st.success(f"✅ Found Estimation files for Reference No: `{search_ref}`")
+                r_col1, r_col2 = st.columns(2)
+                
+                if found_sealed and os.path.exists(found_sealed):
+                    with open(found_sealed, "rb") as f_s:
+                        r_col1.download_button(
+                            label="📄 Re-Download Sealed PDF",
+                            data=f_s,
+                            file_name=os.path.basename(found_sealed),
+                            mime="application/pdf"
+                        )
+                else:
+                    r_col1.warning("Sealed PDF file not found.")
+
+                if found_unsealed and os.path.exists(found_unsealed):
+                    with open(found_unsealed, "rb") as f_u:
+                        r_col2.download_button(
+                            label="📄 Re-Download Unsealed PDF",
+                            data=f_u,
+                            file_name=os.path.basename(found_unsealed),
+                            mime="application/pdf"
+                        )
+                else:
+                    r_col2.warning("Unsealed PDF file not found.")
+            else:
+                st.error(f"❌ No estimation found with Reference Number: `{search_ref}`. Please check the number and try again.")
