@@ -1,18 +1,15 @@
 import os
 import random
-import urllib.request
 from datetime import datetime
 import streamlit as st
 import io
 
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.graphics.shapes import Drawing
 from reportlab.graphics.barcode.qr import QrCodeWidget
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.units import cm
 
 from docx import Document
@@ -20,27 +17,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 import docx.opc.constants
 
-# --- Helper Functions (Same as your Colab) ---
-def add_hyperlink(paragraph, url, text, color="0000FF", underline=True):
-    part = paragraph.part
-    r_id = part.relate_to(url, docx.opc.constants.RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
-    hyperlink = OxmlElement('w:hyperlink')
-    hyperlink.set(qn('r:id'), r_id)
-    new_run = OxmlElement('w:r')
-    rPr = OxmlElement('w:rPr')
-    if color:
-        c = OxmlElement('w:color')
-        c.set(qn('w:val'), color)
-        rPr.append(c)
-    if underline:
-        u = OxmlElement('w:u')
-        u.set(qn('w:val'), 'single')
-        rPr.append(u)
-    new_run.append(rPr)
-    new_run.text = text
-    hyperlink.append(new_run)
-    paragraph._p.append(hyperlink)
-
+# --- Helper Functions ---
 def num_to_words_indian_clean(num):
     num = int(round(num))
     if num == 0: return "ZERO RUPEES ONLY"
@@ -71,35 +48,27 @@ def num_to_words_indian_clean(num):
     if num > 0: result += convert_below_thousand(num)
     return f"{result.strip()} RUPEES ONLY"
 
-def download_image_from_drive(drive_link):
-    try:
-        if "drive.google.com" in drive_link:
-            if "id=" in drive_link:
-                file_id = drive_link.split("id=")[1].split("&")[0]
-            else:
-                file_id = drive_link.split("/d/")[1].split("/")[0]
-            download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-        else:
-            download_url = drive_link
-
-        local_path = "seal_sign.png"
-        urllib.request.urlretrieve(download_url, local_path)
-        if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-            return local_path
-    except Exception as e:
-        print(f"Error downloading seal/sign image: {e}")
-    return None
+# --- PDF Canvas Stamping Method (Forces Image on all pages, overlapping text) ---
+def add_seal_to_canvas(canvas, doc):
+    seal_path = "seal_sign.png"
+    if os.path.exists(seal_path):
+        # EXACT Dimensions required: 4.5cm width, 2.0cm height
+        width = 4.5 * cm
+        height = 2.0 * cm
+        
+        # Position: Right aligned, 10 points from the absolute bottom
+        x_pos = doc.pagesize[0] - doc.rightMargin - width
+        y_pos = 10 
+        
+        # Draw the image over everything else (mask='auto' preserves transparency)
+        canvas.drawImage(seal_path, x_pos, y_pos, width=width, height=height, mask='auto')
 
 # --- Main PDF Generator ---
-def generate_estimation_pdf(owner, address, est_date, target_total, include_seal, seal_link):
+def generate_estimation_pdf(owner, address, est_date, target_total):
     output_dir = "ESTIMATIONS"
     os.makedirs(output_dir, exist_ok=True)
 
     is_single_page = target_total < 1500000
-
-    seal_image_path = None
-    if not is_single_page and include_seal and seal_link:
-        seal_image_path = download_image_from_drive(seal_link)
 
     FIXED_ITEMS_MASTER = [
         ("Replacing sanitary fittings inside the toilets", "SETS", "SETS_UNITS", 0.08),
@@ -153,7 +122,8 @@ def generate_estimation_pdf(owner, address, est_date, target_total, include_seal
     clean_owner_name = owner.replace(' ', '_').replace('&', 'AND')
     pdf_filename = os.path.join(output_dir, f"Estimation_{clean_owner_name}.pdf")
 
-    doc = SimpleDocTemplate(pdf_filename, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=15, bottomMargin=15)
+    # Margins optimized to use 99% space. Bottom margin extremely low so tables push down.
+    doc = SimpleDocTemplate(pdf_filename, pagesize=letter, rightMargin=20, leftMargin=20, topMargin=10, bottomMargin=10)
     styles = getSampleStyleSheet()
 
     RED_COLOR, BLUE_COLOR, LIGHT_PINK, BORDER_BLUE = colors.HexColor("#DC2626"), colors.HexColor("#1E40AF"), colors.HexColor("#EC4899"), colors.HexColor("#2563EB")
@@ -196,12 +166,12 @@ def generate_estimation_pdf(owner, address, est_date, target_total, include_seal
             Paragraph("#15, E BLOCK, SAHAKHAR NAGAR, BANGALORE-560092", sub_style),
             Paragraph("GSTIN: 29ABCDE1234F1Z5", gstin_style),
         ]
-        header_table = Table([["", header_text_flowables, d]], colWidths=[75, 400, 75])
+        header_table = Table([["", header_text_flowables, d]], colWidths=[75, 420, 75])
         header_table.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('LEFTPADDING', (0,0), (-1,-1), 0), ('RIGHTPADDING', (0,0), (-1,-1), 0)]))
         return [header_table, Spacer(1, 4)]
 
     elements.extend(create_header_with_qr())
-    elements.append(Table([[Paragraph(f"REF NO:-{ref_no}", ref_left_style), Paragraph(f"DATE: {est_date}", ref_right_style)]], colWidths=[270, 280]))
+    elements.append(Table([[Paragraph(f"REF NO:-{ref_no}", ref_left_style), Paragraph(f"DATE: {est_date}", ref_right_style)]], colWidths=[285, 285]))
     elements.append(Spacer(1, 4))
 
     address_parts = [p.strip() for p in address.split(',')]
@@ -213,7 +183,7 @@ def generate_estimation_pdf(owner, address, est_date, target_total, include_seal
     if addr_line_2: box_content.append([Paragraph(addr_line_2.upper(), box_detail_style)])
     box_content.append([Paragraph(f"OWNER: - {owner.upper()}", box_detail_style)])
 
-    project_box = Table(box_content, colWidths=[550])
+    project_box = Table(box_content, colWidths=[570])
     project_box.setStyle(TableStyle([('BOX', (0,0), (-1,-1), 2, BORDER_BLUE), ('ROUNDEDCORNERS', [8, 8, 8, 8]), ('TOPPADDING', (0,0), (-1,-1), 3), ('BOTTOMPADDING', (0,0), (-1,-1), 3)]))
     elements.append(project_box)
     elements.append(Spacer(1, 6))
@@ -226,7 +196,7 @@ def generate_estimation_pdf(owner, address, est_date, target_total, include_seal
         p_table_data.append(["", Paragraph("GST 18%", total_14_bold), "", Paragraph(f"{actual_gst:,}", total_14_bold)])
         p_table_data.append(["", Paragraph("TOTAL", total_14_bold), "", Paragraph(f"{final_total:,}", total_14_bold)])
 
-        t1 = Table(p_table_data, colWidths=[50, 280, 100, 120])
+        t1 = Table(p_table_data, colWidths=[50, 300, 100, 120])
         t1.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('TOPPADDING', (0,0), (-1,-1), 6.5), ('BOTTOMPADDING', (0,0), (-1,-1), 6.5)]))
         elements.append(t1)
 
@@ -236,16 +206,9 @@ def generate_estimation_pdf(owner, address, est_date, target_total, include_seal
             item = processed_items[idx]
             p1_table_data.append([Paragraph(f"{idx+1}.", cell_12_bold_center), Paragraph(item[0], cell_12_bold_center), Paragraph(item[1], cell_12_bold_center), Paragraph(f"{item_amounts[idx]:,}", cell_12_bold_center)])
         
-        t1 = Table(p1_table_data, colWidths=[50, 280, 100, 120])
+        t1 = Table(p1_table_data, colWidths=[50, 300, 100, 120])
         t1.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('TOPPADDING', (0,0), (-1,-1), 16), ('BOTTOMPADDING', (0,0), (-1,-1), 16)]))
         elements.append(t1)
-
-        if seal_image_path and os.path.exists(seal_image_path):
-            elements.append(Spacer(1, 6))
-            seal_img_p1 = Image(seal_image_path, width=3.75*cm, height=2.60*cm)
-            seal_table_p1 = Table([[seal_img_p1]], colWidths=[550])
-            seal_table_p1.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
-            elements.append(seal_table_p1)
 
         elements.append(PageBreak())
         elements.extend(create_header_with_qr())
@@ -258,7 +221,7 @@ def generate_estimation_pdf(owner, address, est_date, target_total, include_seal
         p2_table_data.append(["", Paragraph("GST 18%", total_14_bold), "", Paragraph(f"{actual_gst:,}", total_14_bold)])
         p2_table_data.append(["", Paragraph("TOTAL", total_14_bold), "", Paragraph(f"{final_total:,}", total_14_bold)])
 
-        t2 = Table(p2_table_data, colWidths=[50, 280, 100, 120])
+        t2 = Table(p2_table_data, colWidths=[50, 300, 100, 120])
         t2.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('TOPPADDING', (0,0), (-1,-1), 16), ('BOTTOMPADDING', (0,0), (-1,-1), 16)]))
         elements.append(t2)
 
@@ -280,14 +243,8 @@ def generate_estimation_pdf(owner, address, est_date, target_total, include_seal
         elements.append(Paragraph(point, terms_point_size_8))
         elements.append(Spacer(1, 2))
 
-    if not is_single_page and seal_image_path and os.path.exists(seal_image_path):
-        elements.append(Spacer(1, 4))
-        seal_img_final = Image(seal_image_path, width=3.75*cm, height=2.60*cm)
-        seal_table_final = Table([[seal_img_final]], colWidths=[550])
-        seal_table_final.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
-        elements.append(seal_table_final)
-
-    doc.build(elements)
+    # Build the document, stamping the seal on the canvas for ALL pages
+    doc.build(elements, onFirstPage=add_seal_to_canvas, onLaterPages=add_seal_to_canvas)
 
     # Logging
     docx_filename = os.path.join(output_dir, "ESTIMATION_LOG.docx")
@@ -320,17 +277,13 @@ with st.form("estimation_form"):
     date_input = st.text_input("Date:", value=datetime.now().strftime("%d-%m-%Y"))
     amount_input = st.number_input("Target Amount (Rs.):", min_value=50000, max_value=10000000, value=1499000, step=10000)
     
-    st.markdown("---")
-    seal_checkbox = st.checkbox("Include Seal & Sign (For multi-page only)", value=True)
-    seal_link_input = st.text_input("Google Drive Link for Seal:", value="https://drive.google.com/file/d/1QqGyOPDA9Z-kF0NCJUNvK7h03qUHfj4N/view?usp=drive_link")
-    
     submitted = st.form_submit_button("Generate PDF", type="primary")
 
 if submitted:
     with st.spinner('Calculating items and generating PDF...'):
         try:
             pdf_path, docx_path = generate_estimation_pdf(
-                owner_input, address_input, date_input, float(amount_input), seal_checkbox, seal_link_input
+                owner_input, address_input, date_input, float(amount_input)
             )
             st.success("✅ Estimation Generated Successfully!")
             
