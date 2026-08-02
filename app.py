@@ -106,7 +106,7 @@ def fetch_all_logs():
     return response.data
 
 # --- PDF Generation in Memory ---
-def generate_estimation_pdf_bytes(owner, address, est_date, target_total):
+def generate_estimation_pdf_bytes(owner, address, est_date, target_total, include_header=True):
     is_single_page = target_total < 1500000
 
     FIXED_ITEMS_MASTER = [
@@ -159,7 +159,8 @@ def generate_estimation_pdf_bytes(owner, address, est_date, target_total):
     now = datetime.now()
     ref_no = now.strftime("%H%M%d%m%Y")
     clean_owner_name = owner.replace(' ', '_').replace('&', 'AND')
-    filename = f"Estimation_{ref_no}_{clean_owner_name}.pdf"
+    header_suffix = "Standard" if include_header else "NoHeader"
+    filename = f"Estimation_{header_suffix}_{ref_no}_{clean_owner_name}.pdf"
 
     pdf_buffer = io.BytesIO()
     doc = SimpleDocTemplate(pdf_buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=15, bottomMargin=15)
@@ -199,12 +200,17 @@ def generate_estimation_pdf_bytes(owner, address, est_date, target_total):
         w, h = qr_bounds[2] - qr_bounds[0], qr_bounds[3] - qr_bounds[1]
         d = Drawing(60, 60, transform=[60.0/w, 0, 0, 60.0/h, 0, 0])
         d.add(qr)
-        header_text_flowables = [
-            Paragraph("SND INTERIOR & DESIGNS", title_style), Spacer(1, 2),
-            Paragraph("INTERIOR WORKS, DESIGN ESTIMATE, FLOOR VALUATIONS, BUILDING PLANS", sub_style),
-            Paragraph("#15, E BLOCK, SAHAKHAR NAGAR, BANGALORE-560092", sub_style),
-            Paragraph("GSTIN: 29ABCDE1234F1Z5", gstin_style),
-        ]
+        
+        if include_header:
+            header_text_flowables = [
+                Paragraph("SND INTERIOR & DESIGNS", title_style), Spacer(1, 2),
+                Paragraph("INTERIOR WORKS, DESIGN ESTIMATE, FLOOR VALUATIONS, BUILDING PLANS", sub_style),
+                Paragraph("#15, E BLOCK, SAHAKHAR NAGAR, BANGALORE-560092", sub_style),
+                Paragraph("GSTIN: 29ABCDE1234F1Z5", gstin_style),
+            ]
+        else:
+            header_text_flowables = [Spacer(1, 50)]
+            
         header_table = Table([["", header_text_flowables, d]], colWidths=[75, 400, 75])
         header_table.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('LEFTPADDING', (0,0), (-1,-1), 0), ('RIGHTPADDING', (0,0), (-1,-1), 0)]))
         return [header_table, Spacer(1, 4)]
@@ -307,13 +313,20 @@ with tab1:
         date_input = st.text_input("Date:", value=datetime.now().strftime("%d-%m-%Y"))
         amount_input = st.number_input("Target Amount (Rs.):", min_value=50000, max_value=10000000, value=1499000, step=10000)
         
+        header_option = st.radio(
+            "Select Output Format:",
+            options=["Normal (With Company Header)", "Without Company Header (Leave Space)"],
+            index=0
+        )
+        
         submitted = st.form_submit_button("Generate & Save to Cloud", type="primary", use_container_width=True)
 
     if submitted:
         with st.spinner('Generating estimation PDF and syncing to cloud...'):
             try:
+                include_hdr = (header_option == "Normal (With Company Header)")
                 pdf_bytes, filename, generated_ref, final_total = generate_estimation_pdf_bytes(
-                    owner_input, address_input, date_input, float(amount_input)
+                    owner_input, address_input, date_input, float(amount_input), include_header=include_hdr
                 )
                 
                 # Sync to Supabase Cloud
